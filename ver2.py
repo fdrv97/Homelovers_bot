@@ -1,7 +1,7 @@
 import logging
 import sqlite3
-from datetime import datetime, timedelta, time
 from pathlib import Path
+from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
@@ -26,31 +26,133 @@ from telegram.ext import (
 # НАСТРОЙКИ
 # ============================================================
 
-# Вставь сюда токен, который выдал @BotFather
-BOT_TOKEN = "8980714282:AAFwEhIzOMTtz_sGzGcI4IDbomKpgY6P9vg"
+# ------------------------------------------------------------
+# ВСТАВЬ СЮДА ТОКЕН ОТ @BotFather
+# ------------------------------------------------------------
 
-# Часовой пояс.
-# Для Эстонии:
+import os
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+
+# ------------------------------------------------------------
+# Часовой пояс
+# ------------------------------------------------------------
+
 TIMEZONE = ZoneInfo("Europe/Tallinn")
 
-# Файл базы данных.
-DB_FILE = Path(".venv/tasks_bot.sqlite3")
+
+# ============================================================
+# БАЗА ДАННЫХ
+# ============================================================
+
+# ------------------------------------------------------------
+# ВАЖНО ДЛЯ BOTHOST
+#
+# База хранится в папке data.
+#
+# Bothost рекомендует использовать папку data
+# для сохранения базы между обновлениями.
+# ------------------------------------------------------------
+
+DATA_DIR = Path("data")
+
+# Если папки data нет — создаём её.
+DATA_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+DB_FILE = DATA_DIR / "tasks_bot.sqlite3"
+
+
+def check_database_directory():
+    """
+    Проверяет, что папка базы существует
+    и доступна для записи.
+    """
+
+    DATA_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if not DATA_DIR.is_dir():
+        raise RuntimeError(
+            f"Не удалось создать папку базы данных: "
+            f"{DATA_DIR.absolute()}"
+        )
+
+    try:
+        test_file = DATA_DIR / ".write_test"
+
+        test_file.touch(
+            exist_ok=True
+        )
+
+        test_file.unlink()
+
+    except Exception as error:
+
+        raise RuntimeError(
+            "Нет прав на запись в папку базы данных: "
+            f"{DATA_DIR.absolute()}\n"
+            f"Ошибка: {error}"
+        )
+
+
+def get_db():
+    """
+    Открывает SQLite-базу.
+    """
+
+    check_database_directory()
+
+    db = sqlite3.connect(
+        str(DB_FILE),
+        timeout=30,
+    )
+
+    db.row_factory = sqlite3.Row
+
+    # Немного повышаем устойчивость SQLite
+    # к одновременным операциям.
+    db.execute(
+        "PRAGMA journal_mode=WAL"
+    )
+
+    db.execute(
+        "PRAGMA foreign_keys=ON"
+    )
+
+    return db
 
 
 # ============================================================
 # БОНУСЫ
 # ============================================================
 #
-# ЭТО ГЛАВНОЕ МЕСТО, ГДЕ МОЖНО МЕНЯТЬ БОНУСЫ.
-#
-# Награда за создание задачи:
+# ЭТО МЕСТО ДЛЯ ИЗМЕНЕНИЯ БОНУСОВ.
+# ============================================================
+
+
+# Бонус за постановку любой задачи.
 TASK_CREATION_BONUS = 10
 
-# Награда за выполнение в зависимости от срока:
+
+# Бонус за выполнение задачи.
 TASK_BONUSES = {
+
+    # asap
     "asap": 10,
+
+    # в течение дня
     "day": 20,
+
+    # до конца недели
     "week": 50,
+
+    # в течение месяца
     "month": 100,
 }
 
@@ -71,7 +173,12 @@ PRIZES = {
 # ============================================================
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format=(
+        "%(asctime)s - "
+        "%(name)s - "
+        "%(levelname)s - "
+        "%(message)s"
+    ),
     level=logging.INFO,
 )
 
@@ -79,25 +186,25 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# БАЗА ДАННЫХ
+# ИНИЦИАЛИЗАЦИЯ БАЗЫ
 # ============================================================
-
-def get_db():
-    """
-    Открывает соединение с SQLite.
-    """
-
-    db = sqlite3.connect(DB_FILE)
-
-    db.row_factory = sqlite3.Row
-
-    return db
-
 
 def init_db():
     """
-    Создаёт таблицы, если их ещё нет.
+    Создаёт все необходимые таблицы.
     """
+
+    check_database_directory()
+
+    logger.info(
+        "Папка базы данных: %s",
+        DATA_DIR.absolute(),
+    )
+
+    logger.info(
+        "Файл базы данных: %s",
+        DB_FILE.absolute(),
+    )
 
     db = get_db()
 
@@ -109,11 +216,15 @@ def init_db():
         """
         CREATE TABLE IF NOT EXISTS users (
             telegram_id INTEGER PRIMARY KEY,
+
             username TEXT,
+
             first_name TEXT,
+
             bonuses INTEGER NOT NULL DEFAULT 0,
 
             small_tasks_completed INTEGER NOT NULL DEFAULT 0,
+
             big_tasks_completed INTEGER NOT NULL DEFAULT 0
         )
         """
@@ -142,6 +253,7 @@ def init_db():
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS tasks (
+
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
             chat_id INTEGER NOT NULL,
@@ -167,14 +279,12 @@ def init_db():
 
     # --------------------------------------------------------
     # Выполнения задач
-    #
-    # Отдельная таблица нужна, чтобы гарантировать:
-    # одна задача → одно начисление.
     # --------------------------------------------------------
 
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS task_completions (
+
             task_id INTEGER PRIMARY KEY,
 
             user_id INTEGER NOT NULL,
@@ -189,12 +299,13 @@ def init_db():
     )
 
     # --------------------------------------------------------
-    # Попытки потратить бонусы
+    # Запросы на призы
     # --------------------------------------------------------
 
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS prize_requests (
+
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
             user_id INTEGER NOT NULL,
@@ -218,7 +329,7 @@ def init_db():
 
 def now():
     """
-    Текущее время в нужном часовом поясе.
+    Текущее время в часовом поясе бота.
     """
 
     return datetime.now(TIMEZONE)
@@ -226,7 +337,7 @@ def now():
 
 def dt_to_str(value: datetime):
     """
-    datetime → строка для SQLite.
+    datetime → строка.
     """
 
     return value.isoformat()
@@ -234,24 +345,23 @@ def dt_to_str(value: datetime):
 
 def str_to_dt(value: str):
     """
-    Строка SQLite → datetime.
+    Строка → datetime.
     """
 
     return datetime.fromisoformat(value)
 
 
 # ============================================================
-# ПОЛЬЗОВАТЕЛЬ
+# ПОЛЬЗОВАТЕЛИ
 # ============================================================
 
 def ensure_user(update: Update):
     """
-    Автоматически создаёт пользователя.
+    Автоматически создаёт аккаунт пользователя.
 
-    Никаких списков USERS нет.
+    Никакого списка USERS нет.
 
-    Любой человек, который взаимодействует
-    с ботом, автоматически получает аккаунт.
+    Любой участник чата может пользоваться ботом.
     """
 
     user = update.effective_user
@@ -289,7 +399,7 @@ def ensure_user(update: Update):
 
 
 # ============================================================
-# МЕНЮ
+# ГЛАВНОЕ МЕНЮ
 # ============================================================
 
 def main_menu():
@@ -317,6 +427,10 @@ def main_menu():
         ]
     )
 
+
+# ============================================================
+# МЕНЮ СРОКОВ
+# ============================================================
 
 def deadline_menu():
 
@@ -350,22 +464,36 @@ def deadline_menu():
     )
 
 
-def back_menu():
+# ============================================================
+# СРОКИ
+# ============================================================
 
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "Вернуться в меню",
-                    callback_data="back_menu",
-                )
-            ]
-        ]
-    )
+DEADLINE_NAMES = {
+
+    "asap": "asap",
+
+    "day": "в течение дня",
+
+    "week": "до конца недели",
+
+    "month": "в течение месяца",
+}
+
+
+DEADLINE_ORDER = {
+
+    "asap": 1,
+
+    "day": 2,
+
+    "week": 3,
+
+    "month": 4,
+}
 
 
 # ============================================================
-# СРОКИ
+# РАСЧЁТ СРОКА
 # ============================================================
 
 def calculate_expiration(
@@ -373,12 +501,15 @@ def calculate_expiration(
     deadline_type: str,
 ):
     """
-    Вычисляет момент, когда задача сгорает.
+    Рассчитывает момент сгорания задачи.
     """
 
-    if deadline_type in ("asap", "day"):
+    # --------------------------------------------------------
+    # ASAP
+    # --------------------------------------------------------
 
-        # Ближайшие 01:00.
+    if deadline_type == "asap":
+
         expiration = datetime.combine(
             created_at.date(),
             time(1, 0),
@@ -387,19 +518,47 @@ def calculate_expiration(
 
         if expiration <= created_at:
 
-            expiration += timedelta(days=1)
+            expiration += timedelta(
+                days=1
+            )
 
         return expiration
 
+    # --------------------------------------------------------
+    # В течение дня
+    # --------------------------------------------------------
+
+    if deadline_type == "day":
+
+        expiration = datetime.combine(
+            created_at.date(),
+            time(1, 0),
+            tzinfo=TIMEZONE,
+        )
+
+        if expiration <= created_at:
+
+            expiration += timedelta(
+                days=1
+            )
+
+        return expiration
+
+    # --------------------------------------------------------
+    # До конца недели
+    # --------------------------------------------------------
+
     if deadline_type == "week":
 
-        # Ближайшее воскресенье.
         days_until_sunday = (
             6 - created_at.weekday()
         ) % 7
 
-        sunday = created_at + timedelta(
-            days=days_until_sunday
+        sunday = (
+            created_at
+            + timedelta(
+                days=days_until_sunday
+            )
         )
 
         expiration = datetime.combine(
@@ -408,17 +567,24 @@ def calculate_expiration(
             tzinfo=TIMEZONE,
         )
 
-        # Если задача поставлена уже после 14:00
-        # в воскресенье, сроком будет следующее воскресенье.
         if expiration <= created_at:
 
-            expiration += timedelta(days=7)
+            expiration += timedelta(
+                days=7
+            )
 
         return expiration
 
+    # --------------------------------------------------------
+    # В течение месяца
+    # --------------------------------------------------------
+
     if deadline_type == "month":
 
-        return created_at + relativedelta(months=1)
+        return (
+            created_at
+            + relativedelta(months=1)
+        )
 
     raise ValueError(
         f"Неизвестный срок: {deadline_type}"
@@ -426,45 +592,29 @@ def calculate_expiration(
 
 
 # ============================================================
-# НАЗВАНИЯ СРОКОВ
+# ПЕРИОД НАПОМИНАНИЙ
 # ============================================================
-
-DEADLINE_NAMES = {
-    "asap": "asap",
-    "day": "в течение дня",
-    "week": "до конца недели",
-    "month": "в течение месяца",
-}
-
-
-# ============================================================
-# ВРЕМЯ НАПОМИНАНИЙ
-# ============================================================
-
-REMINDER_START_HOUR = 12
-REMINDER_END_HOUR = 1
-
 
 def in_reminder_period(dt: datetime):
     """
-    Разрешённый период для напоминаний:
+    Напоминания разрешены с 12:00 до 01:00.
 
-    12:00–00:59.
+    То есть:
+    12:00–23:59
+    00:00–00:59
 
-    В 01:00 напоминания прекращаются.
+    В 01:00–11:59 напоминания не отправляются.
     """
 
-    hour = dt.hour
-
     return (
-        hour >= 12
-        or hour < 1
+        dt.hour >= 12
+        or dt.hour < 1
     )
 
 
 def next_13_00(dt: datetime):
     """
-    Следующие 13:00.
+    Ближайшие 13:00.
     """
 
     result = datetime.combine(
@@ -475,17 +625,19 @@ def next_13_00(dt: datetime):
 
     if result <= dt:
 
-        result += timedelta(days=1)
+        result += timedelta(
+            days=1
+        )
 
     return result
 
 
 def reminder_time_allowed(dt: datetime):
     """
-    Если сейчас можно отправлять напоминание —
-    возвращаем dt.
+    Если время попадает в период уведомлений —
+    возвращаем его.
 
-    Если сейчас ночь — возвращаем ближайшие 13:00.
+    Если нет — переносим на 13:00.
     """
 
     if in_reminder_period(dt):
@@ -496,13 +648,10 @@ def reminder_time_allowed(dt: datetime):
 
 
 # ============================================================
-# РАСЧЁТ СЛЕДУЮЩЕГО НАПОМИНАНИЯ
+# СЛЕДУЮЩЕЕ НАПОМИНАНИЕ
 # ============================================================
 
 def calculate_next_reminder(task):
-    """
-    Вычисляет, когда отправить следующее напоминание.
-    """
 
     current = now()
 
@@ -518,8 +667,9 @@ def calculate_next_reminder(task):
 
     if deadline_type == "asap":
 
-        candidate = current + timedelta(
-            minutes=10
+        candidate = (
+            current
+            + timedelta(minutes=10)
         )
 
     # --------------------------------------------------------
@@ -532,18 +682,20 @@ def calculate_next_reminder(task):
 
         if remaining > timedelta(hours=1):
 
-            candidate = current + timedelta(
-                hours=1
+            candidate = (
+                current
+                + timedelta(hours=1)
             )
 
         else:
 
-            candidate = current + timedelta(
-                minutes=10
+            candidate = (
+                current
+                + timedelta(minutes=10)
             )
 
     # --------------------------------------------------------
-    # Неделя
+    # До конца недели
     # --------------------------------------------------------
 
     elif deadline_type == "week":
@@ -552,15 +704,13 @@ def calculate_next_reminder(task):
 
         if remaining > timedelta(days=1):
 
-            # Каждый день примерно в то же время,
-            # когда была поставлена задача.
-
             created = str_to_dt(
                 task["created_at"]
             )
 
-            candidate = current + timedelta(
-                days=1
+            candidate = (
+                current
+                + timedelta(days=1)
             )
 
             candidate = candidate.replace(
@@ -570,14 +720,23 @@ def calculate_next_reminder(task):
                 microsecond=0,
             )
 
+            # Если получилось время в прошлом,
+            # оставляем следующий день.
+            if candidate <= current:
+
+                candidate += timedelta(
+                    days=1
+                )
+
         else:
 
-            candidate = current + timedelta(
-                hours=1
+            candidate = (
+                current
+                + timedelta(hours=1)
             )
 
     # --------------------------------------------------------
-    # Месяц
+    # В течение месяца
     # --------------------------------------------------------
 
     elif deadline_type == "month":
@@ -586,14 +745,16 @@ def calculate_next_reminder(task):
 
         if remaining > timedelta(days=7):
 
-            candidate = current + timedelta(
-                days=7
+            candidate = (
+                current
+                + timedelta(days=7)
             )
 
         else:
 
-            candidate = current + timedelta(
-                days=1
+            candidate = (
+                current
+                + timedelta(days=1)
             )
 
     else:
@@ -601,7 +762,7 @@ def calculate_next_reminder(task):
         return None
 
     # --------------------------------------------------------
-    # Нельзя напоминать после истечения.
+    # Не отправляем напоминание после срока.
     # --------------------------------------------------------
 
     if candidate >= expires:
@@ -609,10 +770,12 @@ def calculate_next_reminder(task):
         return None
 
     # --------------------------------------------------------
-    # Если попали в ночь — переносим на 13:00.
+    # Ночью переносим на 13:00.
     # --------------------------------------------------------
 
-    candidate = reminder_time_allowed(candidate)
+    candidate = reminder_time_allowed(
+        candidate
+    )
 
     if candidate >= expires:
 
@@ -672,7 +835,9 @@ def completion_keyboard(task_id):
             [
                 InlineKeyboardButton(
                     "Я это сделал/а",
-                    callback_data=f"complete:{task_id}",
+                    callback_data=(
+                        f"complete:{task_id}"
+                    ),
                 )
             ]
         ]
@@ -680,7 +845,7 @@ def completion_keyboard(task_id):
 
 
 # ============================================================
-# ДОБАВЛЕНИЕ ЗАДАЧИ
+# ДОБАВИТЬ ЗАДАЧУ
 # ============================================================
 
 async def add_task_start(
@@ -728,26 +893,7 @@ async def add_task_start(
         f"введите название задачи:"
     )
 
-async def main_menu_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    """
-    Команда /main.
 
-    Показывает главное меню бота.
-    Работает для любого участника чата.
-    """
-
-    user = ensure_user(update)
-
-    if user is None:
-        return
-
-    await update.message.reply_text(
-        "Главное меню:",
-        reply_markup=main_menu(),
-    )
 # ============================================================
 # ПОЛУЧЕНИЕ НАЗВАНИЯ ЗАДАЧИ
 # ============================================================
@@ -833,7 +979,7 @@ async def receive_task_name(
 
 
 # ============================================================
-# СОЗДАНИЕ ЗАДАЧИ ПОСЛЕ ВЫБОРА СРОКА
+# СОЗДАНИЕ ЗАДАЧИ
 # ============================================================
 
 async def create_task(
@@ -871,7 +1017,7 @@ async def create_task(
         db.close()
 
         await query.message.reply_text(
-            "Не удалось определить задачу. "
+            "Не удалось определить задачу.\n"
             "Попробуйте добавить её заново."
         )
 
@@ -880,7 +1026,6 @@ async def create_task(
     if state["state"] != "waiting_deadline":
 
         db.close()
-
         return
 
     task_name = state["task_name"]
@@ -892,12 +1037,20 @@ async def create_task(
         deadline_type,
     )
 
-    next_reminder = calculate_next_reminder(
-        {
-            "deadline_type": deadline_type,
-            "created_at": dt_to_str(created_at),
-            "expires_at": dt_to_str(expires_at),
-        }
+    temporary_task = {
+        "deadline_type": deadline_type,
+        "created_at": dt_to_str(
+            created_at
+        ),
+        "expires_at": dt_to_str(
+            expires_at
+        ),
+    }
+
+    next_reminder = (
+        calculate_next_reminder(
+            temporary_task
+        )
     )
 
     db.execute(
@@ -929,7 +1082,7 @@ async def create_task(
     )
 
     # --------------------------------------------------------
-    # +10 бонусов за постановку задачи
+    # Бонус за постановку задачи.
     # --------------------------------------------------------
 
     db.execute(
@@ -944,7 +1097,10 @@ async def create_task(
         ),
     )
 
-    # Очищаем состояние.
+    # --------------------------------------------------------
+    # Удаляем состояние пользователя.
+    # --------------------------------------------------------
+
     db.execute(
         """
         DELETE FROM user_states
@@ -956,13 +1112,10 @@ async def create_task(
     db.commit()
     db.close()
 
-    deadline_text = DEADLINE_NAMES[
-        deadline_type
-    ]
-
     await query.message.reply_text(
         f"Задача «{task_name}» добавлена.\n\n"
-        f"Срок: {deadline_text}\n"
+        f"Срок: "
+        f"{DEADLINE_NAMES[deadline_type]}\n"
         f"Выполнить до: "
         f"{expires_at.strftime('%d.%m.%Y %H:%M')}\n\n"
         f"За постановку задачи начислено "
@@ -972,16 +1125,8 @@ async def create_task(
 
 
 # ============================================================
-# СПИСОК ЗАДАЧ
+# ПОСМОТРЕТЬ ЗАДАЧИ
 # ============================================================
-
-DEADLINE_ORDER = {
-    "asap": 1,
-    "day": 2,
-    "week": 3,
-    "month": 4,
-}
-
 
 async def show_tasks(
     update: Update,
@@ -1002,12 +1147,30 @@ async def show_tasks(
         FROM tasks
         WHERE chat_id = ?
           AND status = 'active'
-        ORDER BY expires_at ASC
-        """,
-        (update.effective_chat.id,),
+        """
+        ,
+        (
+            update.effective_chat.id,
+        ),
     ).fetchall()
 
     db.close()
+
+    # --------------------------------------------------------
+    # Сортируем:
+    # сначала более короткие сроки,
+    # затем более раннее сгорание.
+    # --------------------------------------------------------
+
+    tasks = sorted(
+        tasks,
+        key=lambda task: (
+            DEADLINE_ORDER[
+                task["deadline_type"]
+            ],
+            task["expires_at"],
+        ),
+    )
 
     if not tasks:
 
@@ -1022,14 +1185,23 @@ async def show_tasks(
 
     for task in tasks:
 
+        title = task["title"]
+
+        # Чтобы кнопка не была огромной.
+        if len(title) > 45:
+
+            title = title[:42] + "..."
+
         keyboard.append(
             [
                 InlineKeyboardButton(
                     (
-                        f"{task['title']} — "
+                        f"{title} — "
                         f"{DEADLINE_NAMES[task['deadline_type']]}"
                     ),
-                    callback_data=f"view:{task['id']}",
+                    callback_data=(
+                        f"view:{task['id']}"
+                    ),
                 )
             ]
         )
@@ -1110,8 +1282,17 @@ async def view_task(
 
     await query.message.reply_text(
         text,
-        reply_markup=completion_keyboard(
-            task_id
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Просьба выполнена",
+                        callback_data=(
+                            f"complete:{task_id}"
+                        ),
+                    )
+                ]
+            ]
         ),
     )
 
@@ -1140,10 +1321,6 @@ async def complete_task(
 
     db = get_db()
 
-    # --------------------------------------------------------
-    # Проверяем, что задача существует.
-    # --------------------------------------------------------
-
     task = db.execute(
         """
         SELECT *
@@ -1159,13 +1336,14 @@ async def complete_task(
         db.close()
 
         await query.message.reply_text(
-            "Эта задача уже была выполнена."
+            "Эта задача уже была выполнена "
+            "или сгорела."
         )
 
         return
 
     # --------------------------------------------------------
-    # Проверяем, не было ли начисления.
+    # Проверяем, было ли уже начисление.
     # --------------------------------------------------------
 
     already_completed = db.execute(
@@ -1182,7 +1360,8 @@ async def complete_task(
         db.close()
 
         await query.message.reply_text(
-            "Бонусы за эту задачу уже были начислены."
+            "Бонусы за эту задачу "
+            "уже были начислены."
         )
 
         return
@@ -1197,25 +1376,38 @@ async def complete_task(
     # Записываем выполнение.
     # --------------------------------------------------------
 
-    db.execute(
-        """
-        INSERT INTO task_completions (
-            task_id,
-            user_id,
-            completed_at,
-            bonus,
-            completion_type
+    try:
+
+        db.execute(
+            """
+            INSERT INTO task_completions (
+                task_id,
+                user_id,
+                completed_at,
+                bonus,
+                completion_type
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                user.id,
+                dt_to_str(current),
+                bonus,
+                "normal",
+            ),
         )
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            task_id,
-            user.id,
-            dt_to_str(current),
-            bonus,
-            "normal",
-        ),
-    )
+
+    except sqlite3.IntegrityError:
+
+        db.close()
+
+        await query.message.reply_text(
+            "Бонусы за эту задачу "
+            "уже были начислены."
+        )
+
+        return
 
     # --------------------------------------------------------
     # Начисляем бонус.
@@ -1224,22 +1416,19 @@ async def complete_task(
     db.execute(
         """
         UPDATE users
-        SET
-            bonuses = bonuses + ?,
-
-            small_tasks_completed =
-                small_tasks_completed + ?
-
+        SET bonuses = bonuses + ?
         WHERE telegram_id = ?
         """,
         (
             bonus,
-            1 if task["deadline_type"] != "month" else 0,
             user.id,
         ),
     )
 
-    # Большая задача.
+    # --------------------------------------------------------
+    # Статистика.
+    # --------------------------------------------------------
+
     if task["deadline_type"] == "month":
 
         db.execute(
@@ -1247,6 +1436,18 @@ async def complete_task(
             UPDATE users
             SET big_tasks_completed =
                 big_tasks_completed + 1
+            WHERE telegram_id = ?
+            """,
+            (user.id,),
+        )
+
+    else:
+
+        db.execute(
+            """
+            UPDATE users
+            SET small_tasks_completed =
+                small_tasks_completed + 1
             WHERE telegram_id = ?
             """,
             (user.id,),
@@ -1269,7 +1470,7 @@ async def complete_task(
     db.close()
 
     await query.message.reply_text(
-        f"Спасибо!\n"
+        f"Спасибо\n"
         f"Зачислено {bonus} бонусов."
     )
 
@@ -1282,15 +1483,8 @@ async def burn_expired_task(
     context: ContextTypes.DEFAULT_TYPE,
     task,
 ):
-    """
-    Обрабатывает задачу, срок которой закончился.
-    """
 
     db = get_db()
-
-    # --------------------------------------------------------
-    # Проверяем, что задача всё ещё активна.
-    # --------------------------------------------------------
 
     current_task = db.execute(
         """
@@ -1307,7 +1501,10 @@ async def burn_expired_task(
         db.close()
         return
 
-    # Удаляем из списка активных задач.
+    # --------------------------------------------------------
+    # Меняем статус.
+    # --------------------------------------------------------
+
     db.execute(
         """
         UPDATE tasks
@@ -1387,7 +1584,7 @@ async def complete_burned_task(
         return
 
     # --------------------------------------------------------
-    # Проверка повторного нажатия.
+    # Защита от повторного нажатия.
     # --------------------------------------------------------
 
     already_completed = db.execute(
@@ -1404,7 +1601,8 @@ async def complete_burned_task(
         db.close()
 
         await query.message.reply_text(
-            "Бонусы за эту задачу уже начислялись."
+            "Бонусы за эту задачу "
+            "уже были начислены."
         )
 
         return
@@ -1415,28 +1613,43 @@ async def complete_burned_task(
 
     current = now()
 
-    # Записываем выполнение.
-    db.execute(
-        """
-        INSERT INTO task_completions (
-            task_id,
-            user_id,
-            completed_at,
-            bonus,
-            completion_type
-        )
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
-            task_id,
-            user.id,
-            dt_to_str(current),
-            bonus,
-            "burned",
-        ),
-    )
+    try:
 
+        db.execute(
+            """
+            INSERT INTO task_completions (
+                task_id,
+                user_id,
+                completed_at,
+                bonus,
+                completion_type
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                task_id,
+                user.id,
+                dt_to_str(current),
+                bonus,
+                "burned",
+            ),
+        )
+
+    except sqlite3.IntegrityError:
+
+        db.close()
+
+        await query.message.reply_text(
+            "Бонусы за эту задачу "
+            "уже были начислены."
+        )
+
+        return
+
+    # --------------------------------------------------------
     # Начисляем бонус.
+    # --------------------------------------------------------
+
     db.execute(
         """
         UPDATE users
@@ -1449,7 +1662,10 @@ async def complete_burned_task(
         ),
     )
 
+    # --------------------------------------------------------
     # Статистика.
+    # --------------------------------------------------------
+
     if task["deadline_type"] == "month":
 
         db.execute(
@@ -1474,7 +1690,6 @@ async def complete_burned_task(
             (user.id,),
         )
 
-    # Помечаем задачу обработанной.
     db.execute(
         """
         UPDATE tasks
@@ -1523,7 +1738,7 @@ async def show_account(
 
     text = (
         f"Пользователь {user.first_name}\n"
-        f"Бонусов: {account['bonuses']}\n"
+        f"Бонусов {account['bonuses']}\n"
         f"Дел выполнено: "
         f"{account['small_tasks_completed']}\n"
         f"Больших дел выполнено: "
@@ -1554,7 +1769,7 @@ async def show_account(
 
 
 # ============================================================
-# ПОКАЗ ПРИЗОВ
+# ПРИЗЫ
 # ============================================================
 
 async def show_prizes(
@@ -1565,14 +1780,6 @@ async def show_prizes(
     query = update.callback_query
 
     await query.answer()
-
-    text = (
-        "Доступные призы:\n\n"
-        "поцелуй: 10\n"
-        "рандомная вкусняшка: 100\n"
-        "плацинда: 1000\n\n"
-        "Введите название приза:"
-    )
 
     user = ensure_user(update)
 
@@ -1602,13 +1809,20 @@ async def show_prizes(
     db.commit()
     db.close()
 
+    text = (
+        "поцелуй: 10\n"
+        "рандомная вкусняшка: 100\n"
+        "плацинда: 1000\n\n"
+        "Введите название приза:"
+    )
+
     await query.message.reply_text(
         text
     )
 
 
 # ============================================================
-# ОБРАБОТКА ПРИЗА
+# ВЫБОР ПРИЗА
 # ============================================================
 
 async def receive_prize(
@@ -1642,10 +1856,6 @@ async def receive_prize(
     prize_name = (
         update.message.text.strip().lower()
     )
-
-    # --------------------------------------------------------
-    # Ищем приз без учёта регистра.
-    # --------------------------------------------------------
 
     selected_prize = None
 
@@ -1714,7 +1924,7 @@ async def receive_prize(
     )
 
     # --------------------------------------------------------
-    # Сохраняем запрос.
+    # Записываем покупку.
     # --------------------------------------------------------
 
     db.execute(
@@ -1735,7 +1945,10 @@ async def receive_prize(
         ),
     )
 
+    # --------------------------------------------------------
     # Удаляем состояние.
+    # --------------------------------------------------------
+
     db.execute(
         """
         DELETE FROM user_states
@@ -1749,25 +1962,19 @@ async def receive_prize(
 
     await update.message.reply_text(
         f"{user.first_name} хочет списать "
-        f"бонусы на приз {selected_prize}"
+        f"бонусы на приз "
+        f"{selected_prize}"
     )
 
 
 # ============================================================
-# ОБЩИЙ ОБРАБОТЧИК ТЕКСТА
+# ОБРАБОТКА ТЕКСТА
 # ============================================================
 
 async def receive_text(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    """
-    Один обработчик обычного текста.
-
-    Это важно для группового чата:
-    разные пользователи могут одновременно
-    находиться на разных этапах диалога.
-    """
 
     user = ensure_user(update)
 
@@ -1810,25 +2017,6 @@ async def receive_text(
 
 
 # ============================================================
-# ВОЗВРАТ В МЕНЮ
-# ============================================================
-
-async def back_to_menu(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-
-    await query.answer()
-
-    await query.message.reply_text(
-        "Главное меню:",
-        reply_markup=main_menu(),
-    )
-
-
-# ============================================================
 # /START
 # ============================================================
 
@@ -1850,18 +2038,56 @@ async def start(
 
 
 # ============================================================
-# ПЛАНИРОВЩИК
+# /MAIN
+# ============================================================
+
+async def main_menu_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """
+    Команда /main.
+
+    Показывает главное меню.
+    """
+
+    await update.message.reply_text(
+        "Главное меню:",
+        reply_markup=main_menu(),
+    )
+
+
+# ============================================================
+# НАЗАД В МЕНЮ
+# ============================================================
+
+async def back_to_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    await query.message.reply_text(
+        "Главное меню:",
+        reply_markup=main_menu(),
+    )
+
+
+# ============================================================
+# ПЛАНИРОВЩИК ЗАДАЧ
 # ============================================================
 
 async def task_scheduler(
     context: ContextTypes.DEFAULT_TYPE,
 ):
     """
-    Проверяет задачи примерно каждую минуту.
+    Проверяет задачи каждую минуту.
 
-    Здесь:
-    1. сгорают просроченные задачи;
-    2. отправляются напоминания.
+    1. Сгорают просроченные задачи.
+    2. Отправляются напоминания.
     """
 
     current = now()
@@ -1887,7 +2113,7 @@ async def task_scheduler(
             )
 
             # ------------------------------------------------
-            # Задача истекла.
+            # Срок закончился.
             # ------------------------------------------------
 
             if current >= expires:
@@ -1900,10 +2126,11 @@ async def task_scheduler(
                 continue
 
             # ------------------------------------------------
-            # Напоминание.
+            # Нет запланированного напоминания.
             # ------------------------------------------------
 
             if not task["next_reminder_at"]:
+
                 continue
 
             next_reminder = str_to_dt(
@@ -1911,12 +2138,18 @@ async def task_scheduler(
             )
 
             if current < next_reminder:
+
                 continue
 
-            # Ночью не отправляем.
+            # ------------------------------------------------
+            # Если сейчас ночь — переносим на 13:00.
+            # ------------------------------------------------
+
             if not in_reminder_period(current):
 
-                new_time = next_13_00(current)
+                new_time = next_13_00(
+                    current
+                )
 
                 db = get_db()
 
@@ -1938,23 +2171,27 @@ async def task_scheduler(
                 continue
 
             # ------------------------------------------------
-            # Отправляем.
+            # Отправляем напоминание.
             # ------------------------------------------------
 
             await context.bot.send_message(
                 chat_id=task["chat_id"],
                 text=reminder_text(task),
-                reply_markup=completion_keyboard(
-                    task["id"]
+                reply_markup=(
+                    completion_keyboard(
+                        task["id"]
+                    )
                 ),
             )
 
             # ------------------------------------------------
-            # Планируем следующее.
+            # Рассчитываем следующее.
             # ------------------------------------------------
 
-            next_time = calculate_next_reminder(
-                task
+            next_time = (
+                calculate_next_reminder(
+                    task
+                )
             )
 
             db = get_db()
@@ -1969,11 +2206,13 @@ async def task_scheduler(
                 """,
                 (
                     dt_to_str(current),
+
                     (
                         dt_to_str(next_time)
                         if next_time
                         else None
                     ),
+
                     task["id"],
                 ),
             )
@@ -1995,8 +2234,9 @@ async def task_scheduler(
 
 def main():
 
-    # Создаём БД.
-    init_db()
+    # --------------------------------------------------------
+    # Проверяем токен.
+    # --------------------------------------------------------
 
     if (
         not BOT_TOKEN
@@ -2007,15 +2247,27 @@ def main():
             "Не указан BOT_TOKEN."
         )
 
+    # --------------------------------------------------------
+    # Проверяем папку и создаём БД.
+    # --------------------------------------------------------
+
+    check_database_directory()
+
+    init_db()
+
+    # --------------------------------------------------------
+    # Создаём Telegram Application.
+    # --------------------------------------------------------
+
     application = (
         Application.builder()
         .token(BOT_TOKEN)
         .build()
     )
 
-    # --------------------------------------------------------
-    # Команды
-    # --------------------------------------------------------
+    # ========================================================
+    # КОМАНДЫ
+    # ========================================================
 
     application.add_handler(
         CommandHandler(
@@ -2023,6 +2275,7 @@ def main():
             start,
         )
     )
+
     application.add_handler(
         CommandHandler(
             "main",
@@ -2030,9 +2283,9 @@ def main():
         )
     )
 
-    # --------------------------------------------------------
-    # Кнопка «Добавить задачу»
-    # --------------------------------------------------------
+    # ========================================================
+    # ГЛАВНОЕ МЕНЮ
+    # ========================================================
 
     application.add_handler(
         CallbackQueryHandler(
@@ -2041,64 +2294,12 @@ def main():
         )
     )
 
-    # --------------------------------------------------------
-    # Кнопка «Посмотреть задачи»
-    # --------------------------------------------------------
-
     application.add_handler(
         CallbackQueryHandler(
             show_tasks,
             pattern=r"^menu_tasks$",
         )
     )
-
-    # --------------------------------------------------------
-    # Просмотр конкретной задачи
-    # --------------------------------------------------------
-
-    application.add_handler(
-        CallbackQueryHandler(
-            view_task,
-            pattern=r"^view:\d+$",
-        )
-    )
-
-    # --------------------------------------------------------
-    # Выбор срока
-    # --------------------------------------------------------
-
-    application.add_handler(
-        CallbackQueryHandler(
-            create_task,
-            pattern=r"^deadline_(asap|day|week|month)$",
-        )
-    )
-
-    # --------------------------------------------------------
-    # Выполнение активной задачи
-    # --------------------------------------------------------
-
-    application.add_handler(
-        CallbackQueryHandler(
-            complete_task,
-            pattern=r"^complete:\d+$",
-        )
-    )
-
-    # --------------------------------------------------------
-    # Выполнение сгоревшей задачи
-    # --------------------------------------------------------
-
-    application.add_handler(
-        CallbackQueryHandler(
-            complete_burned_task,
-            pattern=r"^burned_complete:\d+$",
-        )
-    )
-
-    # --------------------------------------------------------
-    # Аккаунт
-    # --------------------------------------------------------
 
     application.add_handler(
         CallbackQueryHandler(
@@ -2107,9 +2308,56 @@ def main():
         )
     )
 
-    # --------------------------------------------------------
-    # Потратить бонусы
-    # --------------------------------------------------------
+    # ========================================================
+    # СРОКИ
+    # ========================================================
+
+    application.add_handler(
+        CallbackQueryHandler(
+            create_task,
+            pattern=(
+                r"^deadline_"
+                r"(asap|day|week|month)$"
+            ),
+        )
+    )
+
+    # ========================================================
+    # ПРОСМОТР ЗАДАЧИ
+    # ========================================================
+
+    application.add_handler(
+        CallbackQueryHandler(
+            view_task,
+            pattern=r"^view:\d+$",
+        )
+    )
+
+    # ========================================================
+    # ВЫПОЛНЕНИЕ АКТИВНОЙ ЗАДАЧИ
+    # ========================================================
+
+    application.add_handler(
+        CallbackQueryHandler(
+            complete_task,
+            pattern=r"^complete:\d+$",
+        )
+    )
+
+    # ========================================================
+    # ВЫПОЛНЕНИЕ СГОРЕВШЕЙ ЗАДАЧИ
+    # ========================================================
+
+    application.add_handler(
+        CallbackQueryHandler(
+            complete_burned_task,
+            pattern=r"^burned_complete:\d+$",
+        )
+    )
+
+    # ========================================================
+    # ПОТРАТИТЬ БОНУСЫ
+    # ========================================================
 
     application.add_handler(
         CallbackQueryHandler(
@@ -2118,9 +2366,9 @@ def main():
         )
     )
 
-    # --------------------------------------------------------
-    # Возврат в меню
-    # --------------------------------------------------------
+    # ========================================================
+    # НАЗАД
+    # ========================================================
 
     application.add_handler(
         CallbackQueryHandler(
@@ -2129,13 +2377,9 @@ def main():
         )
     )
 
-    # --------------------------------------------------------
-    # Обычный текст
-    #
-    # Здесь НЕ ConversationHandler.
-    # Состояние хранится в SQLite отдельно для каждого
-    # Telegram user ID.
-    # --------------------------------------------------------
+    # ========================================================
+    # ОБЫЧНЫЙ ТЕКСТ
+    # ========================================================
 
     application.add_handler(
         MessageHandler(
@@ -2145,9 +2389,9 @@ def main():
         )
     )
 
-    # --------------------------------------------------------
-    # Планировщик
-    # --------------------------------------------------------
+    # ========================================================
+    # ПЛАНИРОВЩИК
+    # ========================================================
 
     application.job_queue.run_repeating(
         task_scheduler,
@@ -2156,8 +2400,30 @@ def main():
     )
 
     logger.info(
-        "Бот запущен."
+        "========================================"
     )
+
+    logger.info(
+        "Бот запущен"
+    )
+
+    logger.info(
+        "База данных: %s",
+        DB_FILE.absolute(),
+    )
+
+    logger.info(
+        "Часовой пояс: %s",
+        TIMEZONE,
+    )
+
+    logger.info(
+        "========================================"
+    )
+
+    # ========================================================
+    # POLLING
+    # ========================================================
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
